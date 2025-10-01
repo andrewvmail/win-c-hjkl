@@ -9,6 +9,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
 static mut HOOK: HHOOK = HHOOK(std::ptr::null_mut());
 static CAPSLOCK_PRESSED: AtomicBool = AtomicBool::new(false);
+static WIN_PRESSED: AtomicBool = AtomicBool::new(false);
+static ALT_INJECTED: AtomicBool = AtomicBool::new(false);
 
 // Low-level keyboard hook callback
 unsafe extern "system" fn keyboard_hook_proc(
@@ -32,6 +34,35 @@ unsafe extern "system" fn keyboard_hook_proc(
                 send_key_event(VK_LCONTROL, false);
             }
             return LRESULT(1); // Block the original CapsLock key
+        }
+
+        // Track Windows key state
+        if vk_code == VK_LWIN || vk_code == VK_RWIN {
+            if is_key_down {
+                WIN_PRESSED.store(true, Ordering::SeqCst);
+            } else if is_key_up {
+                WIN_PRESSED.store(false, Ordering::SeqCst);
+                // Release Alt when Windows key is released
+                if ALT_INJECTED.load(Ordering::SeqCst) {
+                    send_key_event(VK_LMENU, false);
+                    ALT_INJECTED.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+
+        // Handle Windows+Tab -> Alt+Tab
+        if vk_code == VK_TAB && WIN_PRESSED.load(Ordering::SeqCst) {
+            if is_key_down {
+                // Press Alt only on first Tab press
+                if !ALT_INJECTED.load(Ordering::SeqCst) {
+                    send_key_event(VK_LMENU, true);
+                    ALT_INJECTED.store(true, Ordering::SeqCst);
+                }
+                send_key_event(VK_TAB, true);
+            } else if is_key_up {
+                send_key_event(VK_TAB, false);
+            }
+            return LRESULT(1); // Block the original Windows+Tab
         }
 
         // Handle Ctrl+HJKL -> Arrow keys (only when Ctrl IS pressed)
@@ -172,7 +203,7 @@ fn main() {
 
     let _tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("win-c-hjkl - Keyboard Remapper\nCapsLock→Ctrl, Ctrl+HJKL→Arrows")
+        .with_tooltip("win-c-hjkl - Keyboard Remapper\nCapsLock→Ctrl, Ctrl+HJKL→Arrows, Win+Tab→Alt+Tab")
         .with_icon(icon)
         .build()
         .unwrap();
